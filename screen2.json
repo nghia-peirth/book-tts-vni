@@ -1,0 +1,20 @@
+{
+  "screenshot": {
+    "name": "projects/15096989734871431306/files/7e2f9aae93634836b53f07f32d2b58c1",
+    "downloadUrl": "https://lh3.googleusercontent.com/aida/AOfcidU8npkzAOWRmZQFXhs5erj_BIAsZcv1upgczFW_tHsIlx4FoMlX7MfqmxF8YZt2KCPjERQf8t7OQgBVoCuxGNliYpm-o6_NCwKNwFANUuJI1YTEzE6E7hwkwq14JvQZzEEfsO8r8uDZGGcU-mnIuYKJPu0fkiUQnEaCo00CvGtYeaIETNlbBkHLXpQvwI_FRr3-HbkyB7ak6vbf7hMT78YFy__YwpYUeJmL55YQAe09gi7bdIhBWtX2RIdW"
+  },
+  "id": "39633f8e80154e778481f3ff5c057a0b",
+  "generatedBy": "image_space_edit_agent",
+  "width": "1408",
+  "height": "768",
+  "title": "Reading Screen Ivory Theme",
+  "prompt": "Title: Classic Library Home Screen\nContext: Premium reading application with a classic and sophisticated aesthetic.\nDescription of the screen: A premium Home/Library screen for a reading app using the 'Modern Ivory' theme. The layout is elegant and spacious. At the top, a refined greeting like 'Good Evening, Reader'. Below that, a 'Currently Reading' section featuring a large, beautiful book cover with a subtle drop shadow and a minimalist progress bar. Following this is a 'My Collection' or 'Bookshelf' grid. Each book item displays a high-quality cover, title in a serif font, and author name. The UI uses thin lines, generous margins, and a palette of ivory, charcoal, and subtle gold accents for status icons. Navigation at the bottom is clean and minimalist.\nPlatform: ios\nForm factor: phone",
+  "name": "projects/15096989734871431306/screens/39633f8e80154e778481f3ff5c057a0b",
+  "theme": {},
+  "deviceType": "MOBILE",
+  "screenType": "DESIGN",
+  "screenMetadata": {
+    "agentType": "IMAGE_PRO_AGENT",
+    "status": "COMPLETE"
+  }
+}

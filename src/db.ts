@@ -43,27 +43,28 @@ export const dbPromise = openDB<ReaderDB>('reader-db', 1, {
 
 export async function addBook(book: Book, chapters: Chapter[]) {
   const db = await dbPromise;
-  
+
   // Save TOC in the book object for instant loading
   const bookWithToc = {
     ...book,
+    progress: book.progress || 0,
     toc: chapters.map(ch => ({ id: ch.id, title: ch.title, order: ch.order }))
   };
-  
+
   // Save book first
   await db.put('books', bookWithToc);
-  
+
   // Save chapters in batches to prevent transaction timeouts for large books
   const BATCH_SIZE = 500;
   for (let i = 0; i < chapters.length; i += BATCH_SIZE) {
     const tx = db.transaction('chapters', 'readwrite');
     const store = tx.objectStore('chapters');
     const batch = chapters.slice(i, i + BATCH_SIZE);
-    
+
     for (const chapter of batch) {
       store.put(chapter);
     }
-    
+
     await tx.done;
   }
 }
@@ -80,26 +81,26 @@ export async function getBook(id: string) {
 
 export async function getChaptersMetadata(bookId: string) {
   const db = await dbPromise;
-  
+
   // Try to get TOC from book object first (instant)
   const book = await db.get('books', bookId);
   if (book && book.toc) {
     return book.toc.map(t => ({ ...t, bookId }));
   }
-  
+
   // Fallback for older books without TOC in the book object
   const tx = db.transaction('chapters', 'readonly');
   const index = tx.store.index('by-book');
-  
+
   const metadata = [];
   let cursor = await index.openCursor(IDBKeyRange.only(bookId));
-  
+
   while (cursor) {
     const { id, bookId: bId, title, order } = cursor.value;
     metadata.push({ id, bookId: bId, title, order });
     cursor = await cursor.continue();
   }
-  
+
   return metadata.sort((a, b) => a.order - b.order);
 }
 
@@ -128,20 +129,20 @@ export async function updateBookProgress(bookId: string, chapterId: string, prog
 export async function deleteBook(bookId: string) {
   const db = await dbPromise;
   const tx = db.transaction(['books', 'chapters'], 'readwrite');
-  
+
   try {
     // Delete the book record
     tx.objectStore('books').delete(bookId);
-    
+
     // Delete all chapters associated with the book
     const chapterStore = tx.objectStore('chapters');
     const index = chapterStore.index('by-book');
     const chapterIds = await index.getAllKeys(bookId);
-    
+
     for (const chapterId of chapterIds) {
       chapterStore.delete(chapterId);
     }
-    
+
     await tx.done;
     return true;
   } catch (error) {

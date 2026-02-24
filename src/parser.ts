@@ -1,8 +1,8 @@
 import * as pdfjsLib from 'pdfjs-dist';
-// @ts-ignore - Vite specific import
-import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+// Cấu hình Worker cho PDF.js bằng CDN tương ứng với phiên bản để tránh lỗi Capacitor
+const pdfjsVersion = '3.11.174'; // Sử dụng phiên bản ổn định hơn cho di động nếu cần thiết, hoặc lấy the version được cài
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
 
 export async function parseFile(
   file: File,
@@ -45,7 +45,7 @@ async function parsePdf(file: File, onProgress?: (percent: number, detail?: stri
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
   const numPages = pdf.numPages;
-  const BATCH_SIZE = 15; // Increased batch size for faster extraction
+  const BATCH_SIZE = 30; // Doubled batch size for much faster extraction
   const pagesText: string[] = new Array(numPages);
 
   for (let i = 1; i <= numPages; i += BATCH_SIZE) {
@@ -103,7 +103,9 @@ async function parsePdf(file: File, onProgress?: (percent: number, detail?: stri
       pagesText[i + j - 1] = batchResults[j];
     }
 
-    await new Promise(resolve => setTimeout(resolve, 20));
+    // Removed artificial timeout to maximize throughput on capable devices. 
+    // Small timeout if needed to let UI breathe just 1ms.
+    await new Promise(resolve => setTimeout(resolve, 1));
   }
 
   return pagesText.join('\n\n');

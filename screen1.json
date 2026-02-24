@@ -1,0 +1,20 @@
+{
+  "screenshot": {
+    "name": "projects/15096989734871431306/files/a74e4538b93b432f8a738f9bbe8b199d",
+    "downloadUrl": "https://lh3.googleusercontent.com/aida/AOfcidX2wRRg-aINN5Imxg35pxV0Me2VlksQhG4bJcix9zGIOMgzVmChYBB5jZeaV6gzmW3mZMRC0ZkXhODOhupmo0Fvdu3UtouUItwy5bXVmfGVJP0M44fo6y0YxeKaKxNhK1HMj4wpcl10UpjJj4duesQvzfK7BcJ-56y0pqe569oeSeaai3-0CKbH7MbQ4sqah3wmS-Kek7khrFOoPFP6kRR8OypRpyDBFKIm59ClPgLfAQfsEUTe7DVV-90"
+  },
+  "id": "48b3ef817ae94dd08ae0a103d4aeeb32",
+  "generatedBy": "image_space_design_agent",
+  "width": "768",
+  "height": "1376",
+  "title": "Reading Screen Ivory Theme",
+  "prompt": "Title: Reading Screen Ivory Theme\nContext: Premium reading application with a classic and sophisticated aesthetic.\nDescription of the screen: Redesign of a book reading screen with a 'Modern Ivory' theme. A very clean, off-white (ivory) background with high-contrast black serif text. This theme is for those who want simplicity and high legibility. The UI uses very thin lines and plenty of white space (margins) to give a \"boutique\" feel. Variant 5 of 5: Modern Ivory.\nPlatform: ios\nForm factor: phone",
+  "name": "projects/15096989734871431306/screens/48b3ef817ae94dd08ae0a103d4aeeb32",
+  "theme": {},
+  "deviceType": "MOBILE",
+  "screenType": "DESIGN",
+  "screenMetadata": {
+    "agentType": "IMAGE_PRO_AGENT",
+    "status": "COMPLETE"
+  }
+}

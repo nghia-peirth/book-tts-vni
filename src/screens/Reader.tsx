@@ -173,11 +173,6 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
 
   useEffect(() => {
     if (book && chapters.length > 0) {
-      const currentChapter = chapters[currentChapterIndex];
-      const progress = Math.round(((currentChapterIndex + 1) / chapters.length) * 100);
-      updateBookProgress(book.id, currentChapter.id, progress);
-      window.scrollTo(0, 0);
-
       // Load current chapter and adjacent chapters
       const loadContent = async () => {
         // Always ensure current chapter is loaded first
@@ -195,15 +190,63 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
     }
   }, [currentChapterIndex, book, chapters, loadChapterContent]);
 
+  // Handle scroll progress
+  useEffect(() => {
+    if (!book || chapters.length === 0) return;
+
+    const handleScroll = () => {
+      const windowHeight = window.innerHeight;
+      const documentHeight = document.documentElement.scrollHeight;
+      const scrollTop = window.scrollY;
+
+      let scrollPercent = 0;
+      if (documentHeight > windowHeight) {
+        scrollPercent = scrollTop / (documentHeight - windowHeight);
+      } else {
+        scrollPercent = 1; // If content is smaller than screen, it's 100% read
+      }
+
+      // Calculate overall progress combining chapter index and scroll position within chapter
+      const chapterWeight = 1 / chapters.length;
+      const baseProgress = (currentChapterIndex / chapters.length) * 100;
+      const scrollProgress = (scrollPercent * chapterWeight) * 100;
+
+      const totalProgress = Math.min(100, Math.round(baseProgress + scrollProgress));
+      const currentChapter = chapters[currentChapterIndex];
+
+      updateBookProgress(book.id, currentChapter.id, totalProgress);
+    };
+
+    // Run once on mount to set initial progress (especially for chapter 1)
+    handleScroll();
+
+    // Throttle scroll events to avoid performance issues
+    let ticking = false;
+    const scrollListener = () => {
+      if (!ticking) {
+        window.requestAnimationFrame(() => {
+          handleScroll();
+          ticking = false;
+        });
+        ticking = true;
+      }
+    };
+
+    window.addEventListener('scroll', scrollListener);
+    return () => window.removeEventListener('scroll', scrollListener);
+  }, [currentChapterIndex, book, chapters]);
+
   const handleNextChapter = () => {
     if (currentChapterIndex < chapters.length - 1) {
       setCurrentChapterIndex(prev => prev + 1);
+      window.scrollTo(0, 0);
     }
   };
 
   const handlePrevChapter = () => {
     if (currentChapterIndex > 0) {
       setCurrentChapterIndex(prev => prev - 1);
+      window.scrollTo(0, 0);
     }
   };
 
@@ -286,8 +329,20 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
   const currentChapter = chapters[currentChapterIndex];
 
   const themeClasses = {
-    light: 'bg-white text-gray-900',
-    dark: 'bg-gray-900 text-gray-100',
+    light: 'bg-[#FDFBF7] text-[#1C1C1C]',
+    dark: 'bg-[#121212] text-[#E0E0E0]',
+    sepia: 'bg-[#f4ecd8] text-[#5b4636]',
+  };
+
+  const navClasses = {
+    light: 'bg-[#FDFBF7]/95 text-[#1C1C1C] border-b border-[#E8E6E1]',
+    dark: 'bg-[#121212]/95 text-[#E0E0E0] border-b border-[#2A2A2A]',
+    sepia: 'bg-[#f4ecd8]/95 text-[#5b4636] border-b border-[#e4dcc8]',
+  };
+
+  const modalClasses = {
+    light: 'bg-[#FDFBF7] text-[#1C1C1C]',
+    dark: 'bg-[#1C1C1E] text-[#E0E0E0]',
     sepia: 'bg-[#f4ecd8] text-[#5b4636]',
   };
 
@@ -295,7 +350,7 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
     <div className={`min-h-screen transition-colors duration-300 ${themeClasses[settings.theme]}`}>
       {/* Top Bar */}
       <div
-        className={`fixed top-0 left-0 right-0 bg-white/90 dark:bg-gray-900/90 backdrop-blur-md shadow-sm transition-transform duration-300 z-40 flex items-center justify-between px-4 pb-3 ${showBars ? 'translate-y-0' : '-translate-y-full'}`}
+        className={`fixed top-0 left-0 right-0 backdrop-blur-md shadow-sm transition-transform duration-300 z-40 flex items-center justify-between px-4 pb-3 ${navClasses[settings.theme]} ${showBars ? 'translate-y-0' : '-translate-y-full'}`}
         style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 0.75rem)' }}
       >
         <button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-black/5 dark:hover:bg-white/10">
@@ -303,7 +358,7 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
         </button>
         <div className="flex-1 flex flex-col items-center px-4 overflow-hidden">
           <h1 className="font-semibold text-sm sm:text-base truncate w-full text-center">{book.title}</h1>
-          <span className="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 font-medium">
+          <span className={`text-[10px] sm:text-xs font-medium opacity-70`}>
             Chương {currentChapterIndex + 1} / {chapters.length}
           </span>
         </div>
@@ -352,7 +407,7 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
 
       {/* Bottom Bar */}
       <div
-        className={`fixed bottom-0 left-0 right-0 bg-white/90 dark:bg-gray-900/90 backdrop-blur-md shadow-[0_-1px_3px_rgba(0,0,0,0.1)] transition-transform duration-300 z-40 px-4 pt-3 flex items-center justify-between ${showBars ? 'translate-y-0' : 'translate-y-full'}`}
+        className={`fixed bottom-0 left-0 right-0 backdrop-blur-md shadow-[0_-1px_3px_rgba(0,0,0,0.1)] transition-transform duration-300 z-40 px-4 pt-3 flex items-center justify-between ${navClasses[settings.theme]} ${showBars ? 'translate-y-0' : 'translate-y-full'}`}
         style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 0.75rem)' }}
       >
         <button
@@ -380,8 +435,8 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
 
       {/* Settings Modal */}
       {showSettings && (
-        <div className="fixed bottom-16 left-0 right-0 bg-white dark:bg-gray-800 shadow-xl rounded-t-2xl z-50 p-6 animate-in slide-in-from-bottom-10 max-w-md mx-auto border border-gray-100 dark:border-gray-700">
-          <h3 className="font-semibold mb-4 text-gray-900 dark:text-gray-100">Cài đặt đọc</h3>
+        <div className={`fixed bottom-16 left-0 right-0 shadow-xl rounded-t-2xl z-50 p-6 animate-in slide-in-from-bottom-10 max-w-md mx-auto border ${settings.theme === 'dark' ? 'border-gray-700' : 'border-gray-100'} ${modalClasses[settings.theme]}`}>
+          <h3 className="font-semibold mb-4">Cài đặt đọc</h3>
 
           <div className="space-y-6">
             {/* Theme */}
@@ -497,14 +552,14 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
       {showTOC && (
         <div className="fixed inset-0 z-50 flex">
           <div className="absolute inset-0 bg-black/50" onClick={() => setShowTOC(false)}></div>
-          <div className="relative w-4/5 max-w-sm bg-white dark:bg-gray-900 h-full shadow-2xl flex flex-col animate-in slide-in-from-left">
-            <div className="p-4 border-b border-gray-100 dark:border-gray-800 flex justify-between items-center bg-white dark:bg-gray-900">
-              <h3 className="font-bold text-lg text-gray-900 dark:text-gray-100">Mục lục</h3>
-              <button onClick={() => setShowTOC(false)} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500">
+          <div className={`relative w-4/5 max-w-sm h-full shadow-2xl flex flex-col animate-in slide-in-from-left ${modalClasses[settings.theme]}`}>
+            <div className={`p-4 border-b flex justify-between items-center ${settings.theme === 'dark' ? 'border-gray-800' : 'border-black/5'}`}>
+              <h3 className="font-bold text-lg">Mục lục</h3>
+              <button onClick={() => setShowTOC(false)} className="p-2 rounded-full hover:bg-black/10 text-current opacity-60 hover:opacity-100">
                 <ArrowLeft className="w-5 h-5" />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-2 bg-white dark:bg-gray-900">
+            <div className="flex-1 overflow-y-auto p-2">
               {chapters.map((ch, idx) => (
                 <button
                   key={ch.id}
