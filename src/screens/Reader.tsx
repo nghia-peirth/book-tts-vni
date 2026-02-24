@@ -20,6 +20,54 @@ const DEFAULT_SETTINGS: ReaderSettings = {
   paragraphSpacing: 1,
 };
 
+const processContent = (text: string) => {
+  if (!text) return [];
+  const normalized = text.replace(/\r\n/g, '\n');
+
+  // Decide what delimiter was primarily used for paragraphs
+  const doubleNewlineCount = (normalized.match(/\n\s*\n/g) || []).length;
+  // If there are a decent amount of double newlines, assume they signify paragraph breaks
+  if (doubleNewlineCount > 3) {
+    return normalized.split(/\n\s*\n/).map(p => p.replace(/\n/g, ' ').trim()).filter(Boolean);
+  } else {
+    // Single newline document (TXT usually, or badly parsed PDF)
+    const lines = normalized.split('\n');
+    const paragraphs: string[] = [];
+    let currentParagraph = '';
+
+    // Regex tests for Vietnamese and common characters
+    const startsWithLower = /^[a-zàáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/;
+    // Endings that strongly suggest the end of a sentence
+    const prevEndsWithPunc = /[.!?:"'”’\]\}>»]$/;
+    const currStartsWithDash = /^[-–—]/;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+
+      if (!currentParagraph) {
+        currentParagraph = line;
+      } else {
+        const isPuncEnd = prevEndsWithPunc.test(currentParagraph) || currentParagraph.endsWith('"');
+        const isDashStart = currStartsWithDash.test(line);
+        const isLowerStart = startsWithLower.test(line);
+
+        // We should continue the paragraph if:
+        // 1. The next line clearly starts with a lowercase letter (continuation of sentence)
+        // 2. OR the previous line didn't end with a sentence-ending punctuation AND this isn't a new dialogue
+        if (isLowerStart || (!isPuncEnd && !isDashStart)) {
+          currentParagraph += ' ' + line;
+        } else {
+          paragraphs.push(currentParagraph);
+          currentParagraph = line;
+        }
+      }
+    }
+    if (currentParagraph) paragraphs.push(currentParagraph);
+    return paragraphs;
+  }
+};
+
 export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void }) {
   const [book, setBook] = useState<Book | null>(null);
   const [chapters, setChapters] = useState<ChapterMetadata[]>([]);
@@ -34,21 +82,21 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
     const saved = localStorage.getItem('reader-settings');
     return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
   });
-  
+
   const [showSettings, setShowSettings] = useState(false);
   const [showTOC, setShowTOC] = useState(false);
   const [showBars, setShowBars] = useState(true);
-  
+
   const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const controller = new AbortController();
     loadBookData(controller.signal);
-    
+
     const timer = setTimeout(() => {
       setShowRetry(true);
     }, 10000); // Show retry after 10 seconds
-    
+
     return () => {
       controller.abort();
       clearTimeout(timer);
@@ -82,7 +130,7 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
       setLoadingStatus('Đang tìm thông tin truyện...');
       const b = await getBook(bookId);
       if (signal?.aborted) return;
-      
+
       if (!b) {
         setError('Không tìm thấy thông tin truyện.');
         return;
@@ -92,7 +140,7 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
       setLoadingStatus('Đang tải danh sách chương...');
       const meta = await getChaptersMetadata(bookId);
       if (signal?.aborted) return;
-      
+
       if (meta.length === 0) {
         setError('Truyện này không có nội dung hoặc lỗi khi lưu.');
         return;
@@ -100,7 +148,7 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
 
       setChapters(meta);
       setLoadingStatus('Đang tải nội dung chương...');
-      
+
       let initialIdx = 0;
       if (b.lastReadChapterId) {
         const idx = meta.findIndex(c => c.id === b.lastReadChapterId);
@@ -108,9 +156,9 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
           initialIdx = idx;
         }
       }
-      
+
       setCurrentChapterIndex(initialIdx);
-      
+
       // Load current chapter content immediately
       const firstChapter = await getChapter(meta[initialIdx].id);
       if (firstChapter && !signal?.aborted) {
@@ -134,7 +182,7 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
       const loadContent = async () => {
         // Always ensure current chapter is loaded first
         await loadChapterContent(currentChapterIndex);
-        
+
         // Then background load previous and next chapters
         if (currentChapterIndex > 0) {
           loadChapterContent(currentChapterIndex - 1);
@@ -175,7 +223,7 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
         <p className="text-gray-500 dark:text-gray-400 mb-8 max-w-xs">
           {error}
         </p>
-        <button 
+        <button
           onClick={onBack}
           className="flex items-center justify-center gap-2 w-full max-w-xs py-3 px-6 rounded-xl bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors font-medium"
         >
@@ -204,17 +252,17 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
           <p className="text-gray-500 dark:text-gray-400 mb-8 text-sm">
             Với các bộ truyện lớn (20MB+), trình duyệt cần thời gian để trích xuất hàng ngàn chương từ bộ nhớ đệm.
           </p>
-          
+
           {showRetry && (
             <div className="mb-6 p-4 bg-amber-50 dark:bg-amber-900/20 rounded-xl border border-amber-200 dark:border-amber-800 text-sm text-amber-800 dark:text-amber-200 animate-in fade-in">
               <p className="font-bold mb-1">Mất quá nhiều thời gian?</p>
               <p>Có thể do dữ liệu quá lớn hoặc trình duyệt bị treo. Bạn có thể thử tải lại trang hoặc quay lại sau.</p>
-              <button 
-                onClick={() => { 
-                  setError(null); 
-                  setShowRetry(false); 
+              <button
+                onClick={() => {
+                  setError(null);
+                  setShowRetry(false);
                   const controller = new AbortController();
-                  loadBookData(controller.signal); 
+                  loadBookData(controller.signal);
                 }}
                 className="mt-3 text-indigo-600 dark:text-indigo-400 font-bold hover:underline"
               >
@@ -223,7 +271,7 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
             </div>
           )}
 
-          <button 
+          <button
             onClick={onBack}
             className="flex items-center justify-center gap-2 w-full py-3 px-6 rounded-xl border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors font-medium"
           >
@@ -246,7 +294,10 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
   return (
     <div className={`min-h-screen transition-colors duration-300 ${themeClasses[settings.theme]}`}>
       {/* Top Bar */}
-      <div className={`fixed top-0 left-0 right-0 bg-white/90 dark:bg-gray-900/90 backdrop-blur-md shadow-sm transition-transform duration-300 z-40 flex items-center justify-between px-4 py-3 ${showBars ? 'translate-y-0' : '-translate-y-full'}`}>
+      <div
+        className={`fixed top-0 left-0 right-0 bg-white/90 dark:bg-gray-900/90 backdrop-blur-md shadow-sm transition-transform duration-300 z-40 flex items-center justify-between px-4 pb-3 ${showBars ? 'translate-y-0' : '-translate-y-full'}`}
+        style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 0.75rem)' }}
+      >
         <button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-black/5 dark:hover:bg-white/10">
           <ArrowLeft className="w-6 h-6" />
         </button>
@@ -267,31 +318,28 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
       </div>
 
       {/* Content */}
-      <div 
+      <div
         className="px-4 sm:px-8 md:px-16 lg:px-32 pt-20 pb-32 min-h-screen cursor-pointer"
         onClick={toggleBars}
       >
-        <div 
+        <div
           ref={contentRef}
           className="max-w-3xl mx-auto"
           style={{
             fontSize: `${settings.fontSize}px`,
-            fontFamily: settings.fontFamily === 'sans-serif' ? 'ui-sans-serif, system-ui, sans-serif' : 
-                        settings.fontFamily === 'serif' ? 'ui-serif, Georgia, serif' : 'ui-monospace, monospace',
+            fontFamily: settings.fontFamily === 'sans-serif' ? 'ui-sans-serif, system-ui, sans-serif' :
+              settings.fontFamily === 'serif' ? 'ui-serif, Georgia, serif' : 'ui-monospace, monospace',
             lineHeight: settings.lineHeight,
           }}
         >
           <h2 className="text-2xl sm:text-3xl font-bold mb-8 text-center">{currentChapter.title}</h2>
           <div className="break-words text-justify">
             {loadedChapters[currentChapter.id] ? (
-              loadedChapters[currentChapter.id].split('\n').map((paragraph, idx) => {
-                if (!paragraph.trim()) return null;
-                return (
-                  <p key={idx} style={{ marginBottom: `${settings.paragraphSpacing}em` }}>
-                    {paragraph}
-                  </p>
-                );
-              })
+              processContent(loadedChapters[currentChapter.id]).map((paragraph, idx) => (
+                <p key={idx} style={{ marginBottom: `${settings.paragraphSpacing}em` }}>
+                  {paragraph}
+                </p>
+              ))
             ) : (
               <div className="flex flex-col items-center justify-center py-20 gap-4">
                 <Loader2 className="w-10 h-10 text-indigo-600 animate-spin" />
@@ -303,8 +351,11 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
       </div>
 
       {/* Bottom Bar */}
-      <div className={`fixed bottom-0 left-0 right-0 bg-white/90 dark:bg-gray-900/90 backdrop-blur-md shadow-[0_-1px_3px_rgba(0,0,0,0.1)] transition-transform duration-300 z-40 px-4 py-3 flex items-center justify-between ${showBars ? 'translate-y-0' : 'translate-y-full'}`}>
-        <button 
+      <div
+        className={`fixed bottom-0 left-0 right-0 bg-white/90 dark:bg-gray-900/90 backdrop-blur-md shadow-[0_-1px_3px_rgba(0,0,0,0.1)] transition-transform duration-300 z-40 px-4 pt-3 flex items-center justify-between ${showBars ? 'translate-y-0' : 'translate-y-full'}`}
+        style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 0.75rem)' }}
+      >
+        <button
           onClick={handlePrevChapter}
           disabled={currentChapterIndex === 0}
           className="flex items-center gap-1 px-3 py-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-30"
@@ -312,12 +363,12 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
           <ChevronLeft className="w-5 h-5" />
           <span className="hidden sm:inline">Chương trước</span>
         </button>
-        
+
         <div className="text-sm font-medium text-center flex-1 px-2 truncate">
           {currentChapterIndex + 1} / {chapters.length}
         </div>
 
-        <button 
+        <button
           onClick={handleNextChapter}
           disabled={currentChapterIndex === chapters.length - 1}
           className="flex items-center gap-1 px-3 py-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-30"
@@ -331,25 +382,25 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
       {showSettings && (
         <div className="fixed bottom-16 left-0 right-0 bg-white dark:bg-gray-800 shadow-xl rounded-t-2xl z-50 p-6 animate-in slide-in-from-bottom-10 max-w-md mx-auto border border-gray-100 dark:border-gray-700">
           <h3 className="font-semibold mb-4 text-gray-900 dark:text-gray-100">Cài đặt đọc</h3>
-          
+
           <div className="space-y-6">
             {/* Theme */}
             <div>
               <label className="text-sm text-gray-500 dark:text-gray-400 mb-2 block">Giao diện</label>
               <div className="flex gap-3">
-                <button 
+                <button
                   onClick={() => setSettings(s => ({ ...s, theme: 'light' }))}
                   className={`flex-1 py-2 rounded-lg border flex items-center justify-center gap-2 bg-white text-gray-900 ${settings.theme === 'light' ? 'border-indigo-500 ring-2 ring-indigo-200' : 'border-gray-200'}`}
                 >
                   <Sun className="w-4 h-4" /> Sáng
                 </button>
-                <button 
+                <button
                   onClick={() => setSettings(s => ({ ...s, theme: 'sepia' }))}
                   className={`flex-1 py-2 rounded-lg border flex items-center justify-center gap-2 bg-[#f4ecd8] text-[#5b4636] ${settings.theme === 'sepia' ? 'border-amber-500 ring-2 ring-amber-200' : 'border-[#e4dcc8]'}`}
                 >
                   Sepia
                 </button>
-                <button 
+                <button
                   onClick={() => setSettings(s => ({ ...s, theme: 'dark' }))}
                   className={`flex-1 py-2 rounded-lg border flex items-center justify-center gap-2 bg-gray-900 text-white ${settings.theme === 'dark' ? 'border-indigo-500 ring-2 ring-indigo-900' : 'border-gray-700'}`}
                 >
@@ -366,10 +417,10 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
               </label>
               <div className="flex items-center gap-4">
                 <Type className="w-4 h-4 text-gray-400" />
-                <input 
-                  type="range" 
-                  min="12" 
-                  max="32" 
+                <input
+                  type="range"
+                  min="12"
+                  max="32"
                   value={settings.fontSize}
                   onChange={(e) => setSettings(s => ({ ...s, fontSize: Number(e.target.value) }))}
                   className="flex-1 accent-indigo-600"
@@ -386,10 +437,10 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
               </label>
               <div className="flex items-center gap-4">
                 <AlignJustify className="w-4 h-4 text-gray-400" />
-                <input 
-                  type="range" 
-                  min="1" 
-                  max="3" 
+                <input
+                  type="range"
+                  min="1"
+                  max="3"
                   step="0.1"
                   value={settings.lineHeight}
                   onChange={(e) => setSettings(s => ({ ...s, lineHeight: Number(e.target.value) }))}
@@ -407,10 +458,10 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
               </label>
               <div className="flex items-center gap-4">
                 <MoveVertical className="w-4 h-4 text-gray-400" />
-                <input 
-                  type="range" 
-                  min="0" 
-                  max="3" 
+                <input
+                  type="range"
+                  min="0"
+                  max="3"
                   step="0.25"
                   value={settings.paragraphSpacing}
                   onChange={(e) => setSettings(s => ({ ...s, paragraphSpacing: Number(e.target.value) }))}
@@ -424,13 +475,13 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
             <div>
               <label className="text-sm text-gray-500 dark:text-gray-400 mb-2 block">Font chữ</label>
               <div className="flex gap-2">
-                <button 
+                <button
                   onClick={() => setSettings(s => ({ ...s, fontFamily: 'sans-serif' }))}
                   className={`flex-1 py-2 rounded-lg border font-sans ${settings.fontFamily === 'sans-serif' ? 'bg-indigo-50 border-indigo-200 text-indigo-700 dark:bg-indigo-900/30 dark:border-indigo-700 dark:text-indigo-300' : 'border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300'}`}
                 >
                   Sans
                 </button>
-                <button 
+                <button
                   onClick={() => setSettings(s => ({ ...s, fontFamily: 'serif' }))}
                   className={`flex-1 py-2 rounded-lg border font-serif ${settings.fontFamily === 'serif' ? 'bg-indigo-50 border-indigo-200 text-indigo-700 dark:bg-indigo-900/30 dark:border-indigo-700 dark:text-indigo-300' : 'border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300'}`}
                 >
