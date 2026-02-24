@@ -4,7 +4,7 @@ import { ArrowLeft, Settings, List, ChevronLeft, ChevronRight, Moon, Sun, Type, 
 import { TextToSpeech, SpeechSynthesisVoice } from '@capacitor-community/text-to-speech';
 import { registerPlugin } from '@capacitor/core';
 
-// Register native TtsBackground plugin
+// Register native TtsBackground plugin (handles TTS natively in Foreground Service)
 const TtsBackground: any = registerPlugin('TtsBackground');
 
 type ChapterMetadata = Omit<Chapter, 'content'>;
@@ -326,47 +326,7 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
     });
   };
 
-  const speakParagraphs = useCallback(async (paragraphs: string[], startIdx: number) => {
-    ttsStoppedRef.current = false;
-    setIsSpeaking(true);
-    setShowBars(true);
-
-    for (let i = startIdx; i < paragraphs.length; i++) {
-      if (ttsStoppedRef.current) break;
-
-      const text = paragraphs[i].trim();
-      if (!text) continue;
-
-      setCurrentParagraphIndex(i);
-
-      // Auto-scroll to current paragraph
-      setTimeout(() => {
-        paragraphRefs.current[i]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }, 100);
-
-      try {
-        await TextToSpeech.speak({
-          text,
-          lang: 'vi-VN',
-          rate: speechRate,
-          ...(selectedVoiceIndex !== undefined ? { voice: selectedVoiceIndex } : {}),
-        });
-      } catch (err: any) {
-        // ERR_UTTERANCE_CANCELLED is expected when we call stop()
-        if (err?.message?.includes('cancel') || err?.code === 'ERR_UTTERANCE_CANCELLED') break;
-        console.error('TTS error:', err);
-        break;
-      }
-    }
-
-    if (!ttsStoppedRef.current) {
-      // Finished reading all paragraphs naturally → auto-advance to next chapter
-      setCurrentParagraphIndex(-1);
-      setIsSpeaking(false);
-      autoAdvanceRef.current = true;
-      handleNextChapter();
-    }
-  }, [speechRate, selectedVoiceIndex]);
+  // ── Native TTS: gửi paragraphs tới Foreground Service, service tự đọc ──
 
   const startSpeaking = useCallback(async () => {
     const chapter = chapters[currentChapterIndex];
@@ -376,41 +336,43 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
     const paragraphs = processContent(content);
     if (paragraphs.length === 0) return;
 
-    // Resume from current position, or start from beginning
     const startFrom = currentParagraphIndex >= 0 ? currentParagraphIndex : 0;
 
-    // Start background service for notification + keep alive
     try {
+      // Start foreground service first
       await TtsBackground.startService({
         bookTitle: book?.title || 'AppReader',
         chapterTitle: chapter?.title || `Chương ${currentChapterIndex + 1}`,
       });
+
+      // Set speech rate
+      await TtsBackground.setRate({ rate: speechRate });
+
+      // Send paragraphs to native service → service handles the TTS loop
+      await TtsBackground.setParagraphs({
+        paragraphs,
+        startIndex: startFrom,
+      });
     } catch (e) {
-      console.warn('TtsBackground.startService failed:', e);
+      console.warn('TtsBackground start failed:', e);
+      return;
     }
 
-    speakParagraphs(paragraphs, startFrom);
-  }, [chapters, currentChapterIndex, loadedChapters, speakParagraphs, currentParagraphIndex, book]);
+    setIsSpeaking(true);
+    setShowBars(true);
+  }, [chapters, currentChapterIndex, loadedChapters, currentParagraphIndex, book, speechRate]);
 
   const pauseSpeaking = useCallback(async () => {
-    ttsStoppedRef.current = true;
     autoAdvanceRef.current = false;
-    try { await TextToSpeech.stop(); } catch (e) { /* ignore */ }
+    try { await TtsBackground.pause(); } catch (e) { /* ignore */ }
     setIsSpeaking(false);
-    // Keep service alive but update notification to paused state
-    try {
-      await TtsBackground.updateNotification({ isPlaying: false });
-    } catch (e) { /* ignore */ }
   }, []);
 
   const fullStopSpeaking = useCallback(async () => {
-    ttsStoppedRef.current = true;
     autoAdvanceRef.current = false;
-    try { await TextToSpeech.stop(); } catch (e) { /* ignore */ }
+    try { await TtsBackground.stopService(); } catch (e) { /* ignore */ }
     setIsSpeaking(false);
     setCurrentParagraphIndex(-1);
-    // Stop background service completely
-    try { await TtsBackground.stopService(); } catch (e) { /* ignore */ }
   }, []);
 
   const toggleSpeaking = useCallback(() => {
@@ -421,21 +383,26 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
     }
   }, [isSpeaking, pauseSpeaking, startSpeaking]);
 
-  // When chapter changes: if auto-advancing, wait for content then continue speaking
+  // Sync speech rate to native service when it changes
+  useEffect(() => {
+    if (isSpeaking) {
+      TtsBackground.setRate({ rate: speechRate }).catch(() => { });
+    }
+  }, [speechRate, isSpeaking]);
+
+  // When chapter changes manually: stop speaking
   useEffect(() => {
     if (autoAdvanceRef.current) {
-      // Chapter just changed via auto-advance, will start speaking when content loads
       setCurrentParagraphIndex(-1);
       return;
     }
-    // Manual chapter change: stop speaking
     if (isSpeaking) {
       fullStopSpeaking();
     }
     setCurrentParagraphIndex(-1);
   }, [currentChapterIndex]);
 
-  // Auto-advance: start speaking when new chapter content is loaded
+  // Auto-advance: when new chapter content loads, send to native service
   useEffect(() => {
     if (!autoAdvanceRef.current) return;
     const chapter = chapters[currentChapterIndex];
@@ -443,35 +410,53 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
     const content = loadedChapters[chapter.id];
     if (!content) return;
 
-    // Content loaded, start speaking from beginning
     autoAdvanceRef.current = false;
     const paragraphs = processContent(content);
     if (paragraphs.length === 0) return;
 
-    // Update notification with new chapter
-    try {
-      TtsBackground.updateNotification({
-        chapterTitle: chapter.title || `Chương ${currentChapterIndex + 1}`,
-        isPlaying: true,
-      });
-    } catch (e) { /* ignore */ }
+    // Send new chapter paragraphs to native service
+    (async () => {
+      try {
+        await TtsBackground.updateNotification({
+          chapterTitle: chapter.title || `Chương ${currentChapterIndex + 1}`,
+        });
+        await TtsBackground.setRate({ rate: speechRate });
+        await TtsBackground.setParagraphs({ paragraphs, startIndex: 0 });
+        setIsSpeaking(true);
+      } catch (e) {
+        console.warn('Auto-advance failed:', e);
+      }
+    })();
+  }, [chapters, currentChapterIndex, loadedChapters, speechRate]);
 
-    speakParagraphs(paragraphs, 0);
-  }, [chapters, currentChapterIndex, loadedChapters]);
-
-  // Listen for notification commands (play/pause/stop/next/prev)
+  // Listen for native service events: commands + paragraph progress
   useEffect(() => {
-    let listener: any;
+    let cmdListener: any;
+    let progressListener: any;
+
+    // Command events: chapter_finished, paused, resumed, stop, play, next, prev
     TtsBackground.addListener('ttsCommand', (data: { command: string }) => {
       switch (data.command) {
-        case 'play':
-          if (!isSpeaking) startSpeaking();
+        case 'chapter_finished':
+          // Native service finished all paragraphs → auto-advance
+          setCurrentParagraphIndex(-1);
+          setIsSpeaking(false);
+          autoAdvanceRef.current = true;
+          handleNextChapter();
           break;
-        case 'pause':
-          if (isSpeaking) pauseSpeaking();
+        case 'paused':
+          setIsSpeaking(false);
+          break;
+        case 'resumed':
+          setIsSpeaking(true);
+          break;
+        case 'play':
+          // User tapped play on notification when not playing
+          startSpeaking();
           break;
         case 'stop':
-          if (isSpeaking) fullStopSpeaking();
+          setIsSpeaking(false);
+          setCurrentParagraphIndex(-1);
           break;
         case 'next':
           handleNextChapter();
@@ -480,19 +465,27 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
           handlePrevChapter();
           break;
       }
-    }).then((l: any) => { listener = l; });
+    }).then((l: any) => { cmdListener = l; });
+
+    // Progress events: paragraph index updates for auto-scroll
+    TtsBackground.addListener('ttsProgress', (data: { index: number }) => {
+      setCurrentParagraphIndex(data.index);
+      // Auto-scroll to current paragraph
+      setTimeout(() => {
+        paragraphRefs.current[data.index]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 100);
+    }).then((l: any) => { progressListener = l; });
 
     return () => {
-      if (listener) listener.remove();
+      if (cmdListener) cmdListener.remove();
+      if (progressListener) progressListener.remove();
     };
-  }, [isSpeaking, startSpeaking, pauseSpeaking, fullStopSpeaking]);
+  }, [startSpeaking]);
 
-  // Cleanup TTS on unmount
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      ttsStoppedRef.current = true;
       autoAdvanceRef.current = false;
-      TextToSpeech.stop().catch(() => { });
       TtsBackground.stopService().catch(() => { });
     };
   }, []);
