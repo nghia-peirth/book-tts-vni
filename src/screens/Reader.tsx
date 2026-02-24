@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Book, Chapter, getBook, getChaptersMetadata, getChapter, updateBookProgress } from '../db';
-import { ArrowLeft, Settings, List, ChevronLeft, ChevronRight, Moon, Sun, Type, Book as BookIcon, X, Loader2, AlignJustify, MoveVertical } from 'lucide-react';
+import { ArrowLeft, Settings, List, ChevronLeft, ChevronRight, Moon, Sun, Type, Book as BookIcon, X, Loader2, AlignJustify, MoveVertical, Volume2, Pause, Play, Square, Gauge } from 'lucide-react';
+import { TextToSpeech, SpeechSynthesisVoice } from '@capacitor-community/text-to-speech';
 
 type ChapterMetadata = Omit<Chapter, 'content'>;
 
@@ -86,6 +87,23 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
   const [showSettings, setShowSettings] = useState(false);
   const [showTOC, setShowTOC] = useState(false);
   const [showBars, setShowBars] = useState(true);
+
+  // TTS State
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [currentParagraphIndex, setCurrentParagraphIndex] = useState(-1);
+  const [speechRate, setSpeechRate] = useState(() => {
+    const saved = localStorage.getItem('tts-rate');
+    return saved ? Number(saved) : 1.0;
+  });
+  const [allVoices, setAllVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [viVoices, setViVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [selectedVoiceIndex, setSelectedVoiceIndex] = useState<number | undefined>(() => {
+    const saved = localStorage.getItem('tts-voice-index');
+    return saved ? Number(saved) : undefined;
+  });
+  const [showVoiceSelector, setShowVoiceSelector] = useState(false);
+  const ttsStoppedRef = useRef(false);
+  const paragraphRefs = useRef<(HTMLParagraphElement | null)[]>([]);
 
   const contentRef = useRef<HTMLDivElement>(null);
 
@@ -251,10 +269,141 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
   };
 
   const toggleBars = () => {
+    if (isSpeaking) return; // Don't toggle bars while TTS controls are showing
     setShowBars(prev => !prev);
     setShowSettings(false);
     setShowTOC(false);
   };
+
+  // === TTS Logic ===
+  const SPEED_OPTIONS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+
+  // Load available voices
+  useEffect(() => {
+    TextToSpeech.getSupportedVoices().then(({ voices }) => {
+      setAllVoices(voices);
+      const viOnly = voices.filter(v => v.lang.startsWith('vi'));
+      setViVoices(viOnly);
+      // If saved voice is out of range, reset
+      const saved = localStorage.getItem('tts-voice-index');
+      if (saved) {
+        const idx = Number(saved);
+        // Verify the saved index is a Vietnamese voice
+        const voiceAtIdx = voices[idx];
+        if (!voiceAtIdx || !voiceAtIdx.lang.startsWith('vi')) {
+          setSelectedVoiceIndex(viOnly.length > 0 ? voices.indexOf(viOnly[0]) : undefined);
+        }
+      }
+    }).catch(err => console.warn('Cannot load TTS voices:', err));
+  }, []);
+
+  const selectVoice = (globalIndex: number) => {
+    setSelectedVoiceIndex(globalIndex);
+    localStorage.setItem('tts-voice-index', String(globalIndex));
+    setShowVoiceSelector(false);
+  };
+
+  const getSelectedVoiceName = () => {
+    if (selectedVoiceIndex === undefined) return 'Mặc định';
+    const voice = allVoices[selectedVoiceIndex];
+    if (!voice) return 'Mặc định';
+    // Shorten the name: "vi-VN-language" → just show the distinguishing part
+    return voice.name.replace(/^Vietnamese\s*/i, '').replace(/^vi[-_]VN[-_]?/i, '') || voice.name;
+  };
+
+  const cycleSpeed = () => {
+    setSpeechRate(prev => {
+      const currentIdx = SPEED_OPTIONS.indexOf(prev);
+      const nextIdx = (currentIdx + 1) % SPEED_OPTIONS.length;
+      const newRate = SPEED_OPTIONS[nextIdx];
+      localStorage.setItem('tts-rate', String(newRate));
+      return newRate;
+    });
+  };
+
+  const speakParagraphs = useCallback(async (paragraphs: string[], startIdx: number) => {
+    ttsStoppedRef.current = false;
+    setIsSpeaking(true);
+    setShowBars(true);
+
+    for (let i = startIdx; i < paragraphs.length; i++) {
+      if (ttsStoppedRef.current) break;
+
+      const text = paragraphs[i].trim();
+      if (!text) continue;
+
+      setCurrentParagraphIndex(i);
+
+      // Auto-scroll to current paragraph
+      setTimeout(() => {
+        paragraphRefs.current[i]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 100);
+
+      try {
+        await TextToSpeech.speak({
+          text,
+          lang: 'vi-VN',
+          rate: speechRate,
+          ...(selectedVoiceIndex !== undefined ? { voice: selectedVoiceIndex } : {}),
+        });
+      } catch (err: any) {
+        // ERR_UTTERANCE_CANCELLED is expected when we call stop()
+        if (err?.message?.includes('cancel') || err?.code === 'ERR_UTTERANCE_CANCELLED') break;
+        console.error('TTS error:', err);
+        break;
+      }
+    }
+
+    if (!ttsStoppedRef.current) {
+      // Finished reading all paragraphs naturally
+      setIsSpeaking(false);
+      setCurrentParagraphIndex(-1);
+    }
+  }, [speechRate, selectedVoiceIndex]);
+
+  const startSpeaking = useCallback(() => {
+    const chapter = chapters[currentChapterIndex];
+    const content = loadedChapters[chapter?.id];
+    if (!content) return;
+
+    const paragraphs = processContent(content);
+    if (paragraphs.length === 0) return;
+
+    // Resume from current position, or start from beginning
+    const startFrom = currentParagraphIndex >= 0 ? currentParagraphIndex : 0;
+    speakParagraphs(paragraphs, startFrom);
+  }, [chapters, currentChapterIndex, loadedChapters, speakParagraphs, currentParagraphIndex]);
+
+  const stopSpeaking = useCallback(async () => {
+    ttsStoppedRef.current = true;
+    try { await TextToSpeech.stop(); } catch (e) { /* ignore */ }
+    setIsSpeaking(false);
+    // Keep currentParagraphIndex so we can resume from here
+  }, []);
+
+  const toggleSpeaking = useCallback(() => {
+    if (isSpeaking) {
+      stopSpeaking();
+    } else {
+      startSpeaking();
+    }
+  }, [isSpeaking, stopSpeaking, startSpeaking]);
+
+  // Reset TTS position when changing chapters
+  useEffect(() => {
+    if (isSpeaking) {
+      stopSpeaking();
+    }
+    setCurrentParagraphIndex(-1); // Reset position for new chapter
+  }, [currentChapterIndex]);
+
+  // Cleanup TTS on unmount
+  useEffect(() => {
+    return () => {
+      ttsStoppedRef.current = true;
+      TextToSpeech.stop().catch(() => { });
+    };
+  }, []);
 
   if (error) {
     return (
@@ -362,7 +511,10 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
             Chương {currentChapterIndex + 1} / {chapters.length}
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1">
+          <button onClick={toggleSpeaking} className={`p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/10 ${isSpeaking ? 'text-indigo-500' : ''}`} title="Nghe truyện">
+            <Volume2 className="w-6 h-6" />
+          </button>
           <button onClick={() => { setShowTOC(!showTOC); setShowSettings(false); }} className="p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/10">
             <List className="w-6 h-6" />
           </button>
@@ -391,7 +543,22 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
           <div className="break-words text-justify">
             {loadedChapters[currentChapter.id] ? (
               processContent(loadedChapters[currentChapter.id]).map((paragraph, idx) => (
-                <p key={idx} style={{ marginBottom: `${settings.paragraphSpacing}em` }}>
+                <p
+                  key={idx}
+                  ref={el => { paragraphRefs.current[idx] = el; }}
+                  style={{
+                    marginBottom: `${settings.paragraphSpacing}em`,
+                    ...(isSpeaking && currentParagraphIndex === idx ? {
+                      backgroundColor: settings.theme === 'dark' ? 'rgba(99,102,241,0.15)' :
+                        settings.theme === 'sepia' ? 'rgba(180,140,80,0.15)' : 'rgba(99,102,241,0.1)',
+                      borderRadius: '6px',
+                      padding: '4px 8px',
+                      margin: '-4px -8px',
+                      marginBottom: `${settings.paragraphSpacing}em`,
+                      transition: 'background-color 0.3s ease',
+                    } : {}),
+                  }}
+                >
                   {paragraph}
                 </p>
               ))
@@ -410,28 +577,146 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
         className={`fixed bottom-0 left-0 right-0 backdrop-blur-md shadow-[0_-1px_3px_rgba(0,0,0,0.1)] transition-transform duration-300 z-40 px-4 pt-3 flex items-center justify-between ${navClasses[settings.theme]} ${showBars ? 'translate-y-0' : 'translate-y-full'}`}
         style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 0.75rem)' }}
       >
-        <button
-          onClick={handlePrevChapter}
-          disabled={currentChapterIndex === 0}
-          className="flex items-center gap-1 px-3 py-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-30"
-        >
-          <ChevronLeft className="w-5 h-5" />
-          <span className="hidden sm:inline">Chương trước</span>
-        </button>
+        {isSpeaking ? (
+          /* TTS Control Bar */
+          <>
+            <button
+              onClick={stopSpeaking}
+              className="flex items-center gap-1 px-3 py-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 text-red-500"
+              title="Dừng đọc"
+            >
+              <Square className="w-5 h-5" />
+            </button>
 
-        <div className="text-sm font-medium text-center flex-1 px-2 truncate">
-          {currentChapterIndex + 1} / {chapters.length}
-        </div>
+            <div className="flex items-center gap-2 flex-1 justify-center">
+              <button
+                onClick={cycleSpeed}
+                className="flex items-center px-2 py-1 rounded-lg bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300 text-xs font-bold min-w-[40px] justify-center"
+                title="Tốc độ đọc"
+              >
+                {speechRate}x
+              </button>
+              <button
+                onClick={() => setShowVoiceSelector(true)}
+                className="flex items-center px-2 py-1 rounded-lg bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-300 text-xs font-medium max-w-[100px] truncate"
+                title="Chọn giọng đọc"
+              >
+                🎙 {getSelectedVoiceName()}
+              </button>
+              <span className="text-xs opacity-60 hidden sm:inline">
+                Đoạn {currentParagraphIndex + 1}
+              </span>
+            </div>
 
-        <button
-          onClick={handleNextChapter}
-          disabled={currentChapterIndex === chapters.length - 1}
-          className="flex items-center gap-1 px-3 py-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-30"
-        >
-          <span className="hidden sm:inline">Chương sau</span>
-          <ChevronRight className="w-5 h-5" />
-        </button>
+            <button
+              onClick={toggleSpeaking}
+              className="flex items-center gap-1 px-3 py-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 text-indigo-500"
+              title="Tạm dừng"
+            >
+              <Pause className="w-5 h-5" />
+            </button>
+          </>
+        ) : showVoiceSelector ? (
+          /* Voice Selector - shown in bottom bar area when not speaking */
+          <></>
+        ) : (
+          /* Normal Navigation Bar */
+          <>
+            <button
+              onClick={handlePrevChapter}
+              disabled={currentChapterIndex === 0}
+              className="flex items-center gap-1 px-3 py-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-30"
+            >
+              <ChevronLeft className="w-5 h-5" />
+              <span className="hidden sm:inline">Chương trước</span>
+            </button>
+
+            <div className="text-sm font-medium text-center flex-1 px-2 truncate">
+              {currentChapterIndex + 1} / {chapters.length}
+            </div>
+
+            <button
+              onClick={handleNextChapter}
+              disabled={currentChapterIndex === chapters.length - 1}
+              className="flex items-center gap-1 px-3 py-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-30"
+            >
+              <span className="hidden sm:inline">Chương sau</span>
+              <ChevronRight className="w-5 h-5" />
+            </button>
+          </>
+        )}
       </div>
+
+      {/* Voice Selector Modal */}
+      {showVoiceSelector && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center" onClick={() => setShowVoiceSelector(false)}>
+          <div className="absolute inset-0 bg-black/40" />
+          <div
+            className={`relative w-full max-w-md rounded-t-2xl shadow-2xl p-5 animate-in slide-in-from-bottom-10 border max-h-[70vh] flex flex-col ${settings.theme === 'dark' ? 'border-gray-700 bg-[#1C1C1E] text-[#E0E0E0]' : settings.theme === 'sepia' ? 'border-[#e4dcc8] bg-[#f4ecd8] text-[#5b4636]' : 'border-gray-100 bg-white text-[#1C1C1C]'}`}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-base">🎙 Chọn giọng đọc tiếng Việt</h3>
+              <button onClick={() => setShowVoiceSelector(false)} className="p-1 rounded-full hover:bg-black/5 dark:hover:bg-white/10">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto flex-1 -mx-2 px-2 space-y-1">
+              {/* Default option */}
+              <button
+                onClick={() => { setSelectedVoiceIndex(undefined); localStorage.removeItem('tts-voice-index'); setShowVoiceSelector(false); }}
+                className={`w-full text-left px-3 py-2.5 rounded-xl flex items-center justify-between transition-colors ${selectedVoiceIndex === undefined ? 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}
+              >
+                <div>
+                  <div className="font-medium text-sm">Mặc định</div>
+                  <div className="text-xs opacity-60">Giọng mặc định của hệ thống</div>
+                </div>
+                {selectedVoiceIndex === undefined && <span className="text-indigo-500 text-lg">✓</span>}
+              </button>
+
+              {viVoices.length === 0 && (
+                <div className="text-center py-6 opacity-60 text-sm">
+                  <p>Đang tải danh sách giọng...</p>
+                  <p className="text-xs mt-1">Nếu không hiện, thiết bị có thể chưa cài voice tiếng Việt</p>
+                </div>
+              )}
+
+              {viVoices.map((voice, i) => {
+                const globalIdx = allVoices.indexOf(voice);
+                const isSelected = selectedVoiceIndex === globalIdx;
+                // Clean up voice name for display
+                const displayName = voice.name
+                  .replace(/^Vietnamese\s*/i, '')
+                  .replace(/Google\s*/i, '')
+                  .replace(/^vi[-_]VN[-_]?/i, '')
+                  || voice.name;
+                return (
+                  <button
+                    key={globalIdx}
+                    onClick={() => selectVoice(globalIdx)}
+                    className={`w-full text-left px-3 py-2.5 rounded-xl flex items-center justify-between transition-colors ${isSelected ? 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium text-sm truncate">{displayName}</div>
+                      <div className="text-xs opacity-60 truncate">
+                        {voice.lang} {voice.localService ? '• Offline' : '• Online'}
+                      </div>
+                    </div>
+                    {isSelected && <span className="text-indigo-500 text-lg ml-2 flex-shrink-0">✓</span>}
+                  </button>
+                );
+              })}
+            </div>
+
+            {viVoices.length > 0 && (
+              <div className="text-xs text-center opacity-50 mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
+                {viVoices.length} giọng tiếng Việt có sẵn
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Settings Modal */}
       {showSettings && (
