@@ -150,3 +150,12 @@ export async function deleteBook(bookId: string) {
     throw error;
   }
 }
+
+export async function updateBookCover(bookId: string, coverDataUrl: string) {
+  const db = await dbPromise;
+  const book = await db.get('books', bookId);
+  if (book) {
+    book.cover = coverDataUrl;
+    await db.put('books', book);
+  }
+}

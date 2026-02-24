@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Book, getBooks, addBook, deleteBook } from '../db';
+import { Book, getBooks, addBook, deleteBook, updateBookCover } from '../db';
 import { parseFile } from '../parser';
-import { Book as BookIcon, Plus, Trash2, Loader2, FileText, Type, Upload, X } from 'lucide-react';
+import { Book as BookIcon, Plus, Trash2, Loader2, FileText, Type, Upload, X, ImagePlus } from 'lucide-react';
 
 export function Home({ onOpenBook }: { onOpenBook: (id: string) => void }) {
   const [books, setBooks] = useState<Book[]>([]);
@@ -12,6 +12,7 @@ export function Home({ onOpenBook }: { onOpenBook: (id: string) => void }) {
   const [statusDetail, setStatusDetail] = useState('');
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [coverEditId, setCoverEditId] = useState<string | null>(null);
   const [abortController, setAbortController] = useState<AbortController | null>(null);
   const [showManualInput, setShowManualInput] = useState(false);
   const [manualTitle, setManualTitle] = useState('');
@@ -130,6 +131,24 @@ export function Home({ onOpenBook }: { onOpenBook: (id: string) => void }) {
     } finally {
       setDeletingId(null);
     }
+  };
+
+  const handleCoverEdit = async (bookId: string) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = async (e: any) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const dataUrl = reader.result as string;
+        await updateBookCover(bookId, dataUrl);
+        await loadBooks();
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
   };
 
   const handleManualSubmit = async (e: React.FormEvent) => {
@@ -289,9 +308,28 @@ export function Home({ onOpenBook }: { onOpenBook: (id: string) => void }) {
                   onClick={() => onOpenBook(book.id)}
                   className="group cursor-pointer relative"
                 >
-                  <div className="aspect-[2/3] w-full bg-[#F4F1EA] dark:bg-[#1C1C1E] border border-[#E8E6E1] dark:border-[#2A2A2A] rounded-lg shadow-sm group-hover:shadow-md transition-shadow flex items-center justify-center p-4 mb-3 relative overflow-hidden">
-                    <BookIcon className="w-8 h-8 text-gray-300 dark:text-gray-700 transition-transform group-hover:scale-110" />
+                  <div className="aspect-[2/3] w-full bg-[#F4F1EA] dark:bg-[#1C1C1E] border border-[#E8E6E1] dark:border-[#2A2A2A] rounded-lg shadow-sm group-hover:shadow-md transition-shadow flex items-center justify-center mb-3 relative overflow-hidden">
+                    {book.cover ? (
+                      <img src={book.cover} alt={book.title} className="w-full h-full object-cover" />
+                    ) : (
+                      <BookIcon className="w-8 h-8 text-gray-300 dark:text-gray-700 transition-transform group-hover:scale-110" />
+                    )}
 
+                    {/* Nút sửa ảnh bìa */}
+                    <button
+                      type="button"
+                      title="Sửa ảnh bìa"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleCoverEdit(book.id);
+                      }}
+                      className="absolute top-2 left-2 bg-white/90 dark:bg-gray-900/90 text-gray-400 hover:text-indigo-500 p-2 rounded-full transition-all z-20 opacity-70"
+                    >
+                      <ImagePlus className="w-4 h-4" />
+                    </button>
+
+                    {/* Nút xóa - luôn hiện trên mobile */}
                     <button
                       type="button"
                       title="Xóa truyện"
@@ -301,7 +339,7 @@ export function Home({ onOpenBook }: { onOpenBook: (id: string) => void }) {
                         e.stopPropagation();
                         setConfirmDeleteId(book.id);
                       }}
-                      className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 bg-white/90 dark:bg-gray-900/90 text-gray-400 hover:text-red-500 p-2 rounded-full transition-all z-20"
+                      className="absolute top-2 right-2 bg-white/90 dark:bg-gray-900/90 text-gray-400 hover:text-red-500 p-2 rounded-full transition-all z-20 opacity-70"
                     >
                       {deletingId === book.id ? (
                         <Loader2 className="w-4 h-4 animate-spin" />

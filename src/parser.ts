@@ -73,6 +73,8 @@ async function parsePdf(file: File, onProgress?: (percent: number, detail?: stri
 
           let pageText = '';
           let lastY = -1;
+          let lastX = -1;   // Track horizontal end position of last item
+          let lastWidth = 0; // Track width of last item
           for (const item of items) {
             if (lastY !== -1) {
               const yDiff = Math.abs(item.transform[5] - lastY);
@@ -87,12 +89,30 @@ async function parsePdf(file: File, onProgress?: (percent: number, detail?: stri
                 // If the distance is > 0.4x font height, it's just a normal new line
                 pageText += '\n';
               } else {
-                pageText += ' ';
+                // Same line: check horizontal gap to decide if we need a space
+                const currentX = item.transform[4]; // X position of current item
+                const gap = currentX - lastX; // Gap between end of last item and start of current
+
+                // Estimate average character width from the last item
+                const lastStr = pageText.slice(-Math.max(1, lastWidth > 0 ? 1 : 0));
+                const avgCharWidth = lastWidth > 0 ? fontHeight * 0.5 : fontHeight * 0.3;
+
+                // Only add space if the gap is significant (> 30% of font height)
+                // Small gaps are just kerning between characters in the same word
+                if (gap > fontHeight * 0.3) {
+                  pageText += ' ';
+                }
+                // If gap is negative or very small, characters are adjacent - no space needed
               }
             }
             pageText += item.str;
             lastY = item.transform[5];
+            lastX = item.transform[4] + (item.width || 0); // End position = X + width
+            lastWidth = item.width || 0;
           }
+          // Post-processing: remove middle dots (·) that are PDF extraction artifacts
+          // e.g. "b·ị" → "bị", "t·ử v·ong" → "tử vong"
+          pageText = pageText.replace(/\u00B7/g, '');
           return pageText;
         })
       );
@@ -112,88 +132,116 @@ async function parsePdf(file: File, onProgress?: (percent: number, detail?: stri
 }
 
 async function splitIntoChapters(text: string, onProgress?: (percent: number, detail?: string) => void, signal?: AbortSignal): Promise<{ title: string; content: string }[]> {
-  // A regex that looks for common chapter keywords at the start of a line
-  const chapterRegex = /^\s*(?:Chương|Chapter|Hồi|Phần|Quyển|Tiết|Mục|Book|Part|[\dIVXLCDM]+)\s*.*$/gim;
+  // Strategy: Use a regex that finds chapter keywords + number ANYWHERE in the text,
+  // not just at the start of a line. Then extract the chapter title from the match.
+  // This handles cases where "Chương X" appears mid-line (e.g. after metadata, Read Count, etc.)
 
-  const matches: RegExpExecArray[] = [];
-  let match;
+  // Pattern 1: Keyword + Number (most reliable) - can appear anywhere
+  // Captures: full match = "Chương 1" or "Chương 1 Tiêu đề chương" or "Chapter 10: Title"
+  // The keyword can be preceded by whitespace or newline
+  const chapterPatterns = [
+    // Vietnamese & English keywords followed by a number, then optional title (up to end of line)
+    /(?:^|\n)[ \t]*(?:Chương|Chapter|Hồi|Quyển|Book)[ \t]*[:\-\.]?[ \t]*(\d+|[IVXLCDM]+)(?:[ \t]*[:\-\.\s][ \t]*([^\n]{0,100}))?/gi,
+    // "Phần", "Tiết", "Mục", "Part" followed by a number  
+    /(?:^|\n)[ \t]*(?:Phần|Tiết|Mục|Part)[ \t]*[:\-\.]?[ \t]*(\d+|[IVXLCDM]+)(?:[ \t]*[:\-\.\s][ \t]*([^\n]{0,100}))?/gi,
+  ];
 
-  chapterRegex.lastIndex = 0;
+  // False positive patterns to exclude
+  const falsePositivePattern = /^[ \t]*(?:Chương trình|Chương mục|Phần lớn|Phần đông|Phần nào|Phần nhiều|Tiết khí|Tiết kiệm)/i;
+
+  interface ChapterMatch {
+    index: number;      // Position in text where chapter content starts
+    matchStart: number;  // Position where the match begins (for splitting)
+    title: string;       // Extracted chapter title
+  }
+
+  const allMatches: ChapterMatch[] = [];
   let count = 0;
-  while ((match = chapterRegex.exec(text)) !== null) {
-    if (signal?.aborted) throw new Error('Aborted');
 
-    const line = match[0].trim();
-    // Heuristic: Chapter titles are usually short
-    if (line.length > 0 && line.length < 120) {
-      // 1. Check for Keyword + Number (The most reliable pattern)
-      // Supports digits, Roman numerals, and Vietnamese number words.
-      // We use a stricter check for Roman numerals to ensure they aren't just the start of a word (like 'l' in 'luật').
-      const keywordPattern = /^(?:Chương|Chapter|Hồi|Phần|Quyển|Tiết|Mục|Book|Part)/i;
-      const numberPattern = /(?:\d+|One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|Một|Hai|Ba|Bốn|Năm|Sáu|Bảy|Tám|Chín|Mười|Mươi|Trăm|Ngàn|Vạn|Lăm|Lẻ|Linh|Tư)\b/i;
-      const romanPattern = /\b[IVXLCDM]+\b/i;
+  for (const regex of chapterPatterns) {
+    regex.lastIndex = 0;
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      if (signal?.aborted) throw new Error('Aborted');
 
-      const hasKeyword = keywordPattern.test(line);
-      const hasNumber = numberPattern.test(line) || romanPattern.test(line);
+      const fullMatch = match[0];
+      const trimmedMatch = fullMatch.replace(/^[\n\r]+/, '').trim();
 
-      // A line is a likely chapter if it has a keyword followed closely by a number
-      const keywordWithNumber = hasKeyword && /^(?:Chương|Chapter|Hồi|Phần|Quyển|Tiết|Mục|Book|Part)\s*(?:[:\-\.]?\s*)?(?:\d+|[IVXLCDM]+|Một|Hai|Ba|Bốn|Năm|Sáu|Bảy|Tám|Chín|Mười|Mươi|Trăm|Ngàn|Vạn|Lăm|Lẻ|Linh|Tư)\b/i.test(line);
+      // Skip false positives
+      if (falsePositivePattern.test(trimmedMatch)) continue;
 
-      // 2. Check for just a Number at the start (e.g., "1. Chapter Title")
-      // Must be followed by a clear separator and a capitalized word
-      const isNumberedHeader = /^\d+[\.\-\:]\s+[A-ZÀ-Ỹ]/.test(line);
-      const isRomanHeader = /^[IVXLCDM]+[\.\-\:]\s+[A-ZÀ-Ỹ]/.test(line);
+      // Skip if the match is too short (no meaningful content) 
+      if (trimmedMatch.length === 0) continue;
 
-      // 3. Exclude lines that look like normal sentences
-      // Normal sentences often end with punctuation or contain many lowercase words without a clear structure
-      const endsWithSentencePunctuation = /[,\.!?;]$/.test(line);
+      // Build the chapter title
+      const chapterNumber = match[1];
+      const chapterSubtitle = match[2]?.trim() || '';
 
-      // Heuristic: If it starts with "Chương" but is followed by a common word that isn't a number/title
-      const isFalsePositiveKeyword = /^(?:Chương trình|Chương mục|Phần lớn|Phần đông|Tiết khí)/i.test(line);
+      // Extract keyword from the trimmed match
+      const keywordMatch = trimmedMatch.match(/^(Chương|Chapter|Hồi|Phần|Quyển|Tiết|Mục|Book|Part)/i);
+      const keyword = keywordMatch ? keywordMatch[1] : '';
 
-      if ((keywordWithNumber && !isFalsePositiveKeyword) || ((isNumberedHeader || isRomanHeader) && !endsWithSentencePunctuation)) {
-        // Final sanity check: if it's just a range like "1-7", skip it
-        if (/^\d+[\-\/]\d+$/.test(line)) continue;
-
-        matches.push(match);
-        count++;
-        if (count % 100 === 0 && onProgress) {
-          onProgress(0, `Đã tìm thấy ${count} chương...`);
+      let title = `${keyword} ${chapterNumber}`;
+      if (chapterSubtitle && !chapterSubtitle.match(/[,\.!?;]$/)) {
+        // Only append subtitle if it doesn't look like a regular sentence
+        // Also skip if subtitle is too long (likely paragraph content, not title)
+        if (chapterSubtitle.length <= 80) {
+          title = `${keyword} ${chapterNumber}: ${chapterSubtitle}`;
         }
+      }
+
+      // Calculate where the match starts in the original text
+      // Account for possible leading newline in the match
+      const leadingNewlineLen = fullMatch.length - fullMatch.replace(/^[\n\r]+/, '').length;
+      const matchStart = match.index + leadingNewlineLen;
+
+      // The content starts after the full matched line
+      const lineEndIndex = text.indexOf('\n', matchStart);
+      const contentStart = lineEndIndex !== -1 ? lineEndIndex + 1 : match.index + fullMatch.length;
+
+      allMatches.push({
+        index: contentStart,
+        matchStart: matchStart,
+        title: title.trim(),
+      });
+
+      count++;
+      if (count % 100 === 0 && onProgress) {
+        onProgress(0, `Đã tìm thấy ${count} chương...`);
       }
     }
   }
 
-  if (matches.length === 0) {
+  if (allMatches.length === 0) {
     return [{ title: 'Nội dung', content: text }];
   }
 
-  // Remove duplicates and sort by index
-  const sortedMatches = Array.from(new Map(matches.map(m => [m.index, m])).values())
-    .sort((a, b) => a.index - b.index);
+  // Remove duplicates (by matchStart position) and sort
+  const uniqueMatches = Array.from(
+    new Map(allMatches.map(m => [m.matchStart, m])).values()
+  ).sort((a, b) => a.matchStart - b.matchStart);
 
   const chapters: { title: string; content: string }[] = [];
 
-  if (sortedMatches[0].index > 0) {
-    const prologue = text.substring(0, sortedMatches[0].index).trim();
+  // Add prologue if there's content before the first chapter
+  if (uniqueMatches[0].matchStart > 0) {
+    const prologue = text.substring(0, uniqueMatches[0].matchStart).trim();
     if (prologue.length > 0) {
       chapters.push({ title: 'Mở đầu', content: prologue });
     }
   }
 
-  for (let i = 0; i < sortedMatches.length; i++) {
+  for (let i = 0; i < uniqueMatches.length; i++) {
     if (signal?.aborted) throw new Error('Aborted');
-    const m = sortedMatches[i];
-    const title = m[0].trim();
-    const startIndex = m.index + m[0].length;
-    const endIndex = i < sortedMatches.length - 1 ? sortedMatches[i + 1].index : text.length;
+    const m = uniqueMatches[i];
+    const endIndex = i < uniqueMatches.length - 1 ? uniqueMatches[i + 1].matchStart : text.length;
 
-    let content = text.substring(startIndex, endIndex).trim();
-    chapters.push({ title, content });
+    const content = text.substring(m.index, endIndex).trim();
+    chapters.push({ title: m.title, content });
 
     if (i % 50 === 0) {
       if (onProgress) {
-        onProgress((i / matches.length) * 100, `Đang tách chương ${i + 1} / ${matches.length}`);
+        onProgress((i / uniqueMatches.length) * 100, `Đang tách chương ${i + 1} / ${uniqueMatches.length}`);
       }
       await new Promise(resolve => setTimeout(resolve, 10));
     }
