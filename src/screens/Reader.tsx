@@ -2,6 +2,10 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Book, Chapter, getBook, getChaptersMetadata, getChapter, updateBookProgress } from '../db';
 import { ArrowLeft, Settings, List, ChevronLeft, ChevronRight, Moon, Sun, Type, Book as BookIcon, X, Loader2, AlignJustify, MoveVertical, Volume2, Pause, Play, Square, Gauge } from 'lucide-react';
 import { TextToSpeech, SpeechSynthesisVoice } from '@capacitor-community/text-to-speech';
+import { registerPlugin } from '@capacitor/core';
+
+// Register native TtsBackground plugin
+const TtsBackground: any = registerPlugin('TtsBackground');
 
 type ChapterMetadata = Omit<Chapter, 'content'>;
 
@@ -103,6 +107,7 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
   });
   const [showVoiceSelector, setShowVoiceSelector] = useState(false);
   const ttsStoppedRef = useRef(false);
+  const autoAdvanceRef = useRef(false);
   const paragraphRefs = useRef<(HTMLParagraphElement | null)[]>([]);
 
   const contentRef = useRef<HTMLDivElement>(null);
@@ -355,13 +360,15 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
     }
 
     if (!ttsStoppedRef.current) {
-      // Finished reading all paragraphs naturally
-      setIsSpeaking(false);
+      // Finished reading all paragraphs naturally → auto-advance to next chapter
       setCurrentParagraphIndex(-1);
+      setIsSpeaking(false);
+      autoAdvanceRef.current = true;
+      handleNextChapter();
     }
   }, [speechRate, selectedVoiceIndex]);
 
-  const startSpeaking = useCallback(() => {
+  const startSpeaking = useCallback(async () => {
     const chapter = chapters[currentChapterIndex];
     const content = loadedChapters[chapter?.id];
     if (!content) return;
@@ -371,37 +378,122 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
 
     // Resume from current position, or start from beginning
     const startFrom = currentParagraphIndex >= 0 ? currentParagraphIndex : 0;
-    speakParagraphs(paragraphs, startFrom);
-  }, [chapters, currentChapterIndex, loadedChapters, speakParagraphs, currentParagraphIndex]);
 
-  const stopSpeaking = useCallback(async () => {
+    // Start background service for notification + keep alive
+    try {
+      await TtsBackground.startService({
+        bookTitle: book?.title || 'AppReader',
+        chapterTitle: chapter?.title || `Chương ${currentChapterIndex + 1}`,
+      });
+    } catch (e) {
+      console.warn('TtsBackground.startService failed:', e);
+    }
+
+    speakParagraphs(paragraphs, startFrom);
+  }, [chapters, currentChapterIndex, loadedChapters, speakParagraphs, currentParagraphIndex, book]);
+
+  const pauseSpeaking = useCallback(async () => {
     ttsStoppedRef.current = true;
+    autoAdvanceRef.current = false;
     try { await TextToSpeech.stop(); } catch (e) { /* ignore */ }
     setIsSpeaking(false);
-    // Keep currentParagraphIndex so we can resume from here
+    // Keep service alive but update notification to paused state
+    try {
+      await TtsBackground.updateNotification({ isPlaying: false });
+    } catch (e) { /* ignore */ }
+  }, []);
+
+  const fullStopSpeaking = useCallback(async () => {
+    ttsStoppedRef.current = true;
+    autoAdvanceRef.current = false;
+    try { await TextToSpeech.stop(); } catch (e) { /* ignore */ }
+    setIsSpeaking(false);
+    setCurrentParagraphIndex(-1);
+    // Stop background service completely
+    try { await TtsBackground.stopService(); } catch (e) { /* ignore */ }
   }, []);
 
   const toggleSpeaking = useCallback(() => {
     if (isSpeaking) {
-      stopSpeaking();
+      pauseSpeaking();
     } else {
       startSpeaking();
     }
-  }, [isSpeaking, stopSpeaking, startSpeaking]);
+  }, [isSpeaking, pauseSpeaking, startSpeaking]);
 
-  // Reset TTS position when changing chapters
+  // When chapter changes: if auto-advancing, wait for content then continue speaking
   useEffect(() => {
-    if (isSpeaking) {
-      stopSpeaking();
+    if (autoAdvanceRef.current) {
+      // Chapter just changed via auto-advance, will start speaking when content loads
+      setCurrentParagraphIndex(-1);
+      return;
     }
-    setCurrentParagraphIndex(-1); // Reset position for new chapter
+    // Manual chapter change: stop speaking
+    if (isSpeaking) {
+      fullStopSpeaking();
+    }
+    setCurrentParagraphIndex(-1);
   }, [currentChapterIndex]);
+
+  // Auto-advance: start speaking when new chapter content is loaded
+  useEffect(() => {
+    if (!autoAdvanceRef.current) return;
+    const chapter = chapters[currentChapterIndex];
+    if (!chapter) return;
+    const content = loadedChapters[chapter.id];
+    if (!content) return;
+
+    // Content loaded, start speaking from beginning
+    autoAdvanceRef.current = false;
+    const paragraphs = processContent(content);
+    if (paragraphs.length === 0) return;
+
+    // Update notification with new chapter
+    try {
+      TtsBackground.updateNotification({
+        chapterTitle: chapter.title || `Chương ${currentChapterIndex + 1}`,
+        isPlaying: true,
+      });
+    } catch (e) { /* ignore */ }
+
+    speakParagraphs(paragraphs, 0);
+  }, [chapters, currentChapterIndex, loadedChapters]);
+
+  // Listen for notification commands (play/pause/stop/next/prev)
+  useEffect(() => {
+    let listener: any;
+    TtsBackground.addListener('ttsCommand', (data: { command: string }) => {
+      switch (data.command) {
+        case 'play':
+          if (!isSpeaking) startSpeaking();
+          break;
+        case 'pause':
+          if (isSpeaking) pauseSpeaking();
+          break;
+        case 'stop':
+          if (isSpeaking) fullStopSpeaking();
+          break;
+        case 'next':
+          handleNextChapter();
+          break;
+        case 'prev':
+          handlePrevChapter();
+          break;
+      }
+    }).then((l: any) => { listener = l; });
+
+    return () => {
+      if (listener) listener.remove();
+    };
+  }, [isSpeaking, startSpeaking, pauseSpeaking, fullStopSpeaking]);
 
   // Cleanup TTS on unmount
   useEffect(() => {
     return () => {
       ttsStoppedRef.current = true;
+      autoAdvanceRef.current = false;
       TextToSpeech.stop().catch(() => { });
+      TtsBackground.stopService().catch(() => { });
     };
   }, []);
 
@@ -581,7 +673,7 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
           /* TTS Control Bar */
           <>
             <button
-              onClick={stopSpeaking}
+              onClick={fullStopSpeaking}
               className="flex items-center gap-1 px-3 py-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 text-red-500"
               title="Dừng đọc"
             >
