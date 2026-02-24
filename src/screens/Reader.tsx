@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Book, Chapter, getBook, getChaptersMetadata, getChapter, updateBookProgress } from '../db';
 import { ArrowLeft, Settings, List, ChevronLeft, ChevronRight, Moon, Sun, Type, Book as BookIcon, X, Loader2, AlignJustify, MoveVertical, Volume2, Pause, Play, Square, Gauge } from 'lucide-react';
 import { TextToSpeech, SpeechSynthesisVoice } from '@capacitor-community/text-to-speech';
@@ -77,6 +77,7 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
   const [book, setBook] = useState<Book | null>(null);
   const [chapters, setChapters] = useState<ChapterMetadata[]>([]);
   const [loadedChapters, setLoadedChapters] = useState<Record<string, string>>({});
+  const loadedChaptersRef = useRef<Record<string, string>>({});
   const loadingChaptersRef = useRef<Set<string>>(new Set());
   const [loadingContent, setLoadingContent] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState('Đang kết nối cơ sở dữ liệu...');
@@ -130,10 +131,14 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
     localStorage.setItem('reader-settings', JSON.stringify(settings));
   }, [settings]);
 
+  // Sync ref with state to avoid stale closure in useCallback
+  useEffect(() => { loadedChaptersRef.current = loadedChapters; }, [loadedChapters]);
+
   const loadChapterContent = useCallback(async (index: number, signal?: AbortSignal) => {
     if (index < 0 || index >= chapters.length) return;
     const chapter = chapters[index];
-    if (loadedChapters[chapter.id] || loadingChaptersRef.current.has(chapter.id)) return;
+    // Use ref (not state) to check — avoids re-creating this callback on every chapter load
+    if (loadedChaptersRef.current[chapter.id] || loadingChaptersRef.current.has(chapter.id)) return;
 
     try {
       loadingChaptersRef.current.add(chapter.id);
@@ -146,7 +151,7 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
     } finally {
       loadingChaptersRef.current.delete(chapter.id);
     }
-  }, [chapters, loadedChapters]);
+  }, [chapters]);
 
   const loadBookData = async (signal?: AbortSignal) => {
     try {
@@ -213,9 +218,12 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
     }
   }, [currentChapterIndex, book, chapters, loadChapterContent]);
 
-  // Handle scroll progress
+  // Handle scroll progress — debounced DB writes (save max once every 2s)
   useEffect(() => {
     if (!book || chapters.length === 0) return;
+
+    let saveTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastSavedProgress = -1;
 
     const handleScroll = () => {
       const windowHeight = window.innerHeight;
@@ -226,24 +234,29 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
       if (documentHeight > windowHeight) {
         scrollPercent = scrollTop / (documentHeight - windowHeight);
       } else {
-        scrollPercent = 1; // If content is smaller than screen, it's 100% read
+        scrollPercent = 1;
       }
 
-      // Calculate overall progress combining chapter index and scroll position within chapter
       const chapterWeight = 1 / chapters.length;
       const baseProgress = (currentChapterIndex / chapters.length) * 100;
       const scrollProgress = (scrollPercent * chapterWeight) * 100;
-
       const totalProgress = Math.min(100, Math.round(baseProgress + scrollProgress));
-      const currentChapter = chapters[currentChapterIndex];
 
-      updateBookProgress(book.id, currentChapter.id, totalProgress);
+      // Only save when progress actually changes
+      if (totalProgress !== lastSavedProgress) {
+        lastSavedProgress = totalProgress;
+        const currentChapter = chapters[currentChapterIndex];
+
+        // Debounce: wait 2s after last scroll to write to DB
+        if (saveTimer) clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => {
+          updateBookProgress(book.id, currentChapter.id, totalProgress);
+        }, 2000);
+      }
     };
 
-    // Run once on mount to set initial progress (especially for chapter 1)
     handleScroll();
 
-    // Throttle scroll events to avoid performance issues
     let ticking = false;
     const scrollListener = () => {
       if (!ticking) {
@@ -255,8 +268,18 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
       }
     };
 
-    window.addEventListener('scroll', scrollListener);
-    return () => window.removeEventListener('scroll', scrollListener);
+    window.addEventListener('scroll', scrollListener, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', scrollListener);
+      // Save immediately on cleanup
+      if (saveTimer) {
+        clearTimeout(saveTimer);
+        const currentChapter = chapters[currentChapterIndex];
+        if (lastSavedProgress >= 0) {
+          updateBookProgress(book.id, currentChapter.id, lastSavedProgress);
+        }
+      }
+    };
   }, [currentChapterIndex, book, chapters]);
 
   const handleNextChapter = () => {
@@ -562,6 +585,12 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
 
   const currentChapter = chapters[currentChapterIndex];
 
+  // Memoize processed paragraphs — avoid re-splitting text on every render
+  const processedParagraphs = useMemo(() => {
+    const content = loadedChapters[currentChapter?.id];
+    return content ? processContent(content) : [];
+  }, [loadedChapters[currentChapter?.id]]);
+
   const themeClasses = {
     light: 'bg-[#FDFBF7] text-[#1C1C1C]',
     dark: 'bg-[#121212] text-[#E0E0E0]',
@@ -626,8 +655,8 @@ export function Reader({ bookId, onBack }: { bookId: string; onBack: () => void 
         >
           <h2 className="text-2xl sm:text-3xl font-bold mb-8 text-center">{currentChapter.title}</h2>
           <div className="break-words text-justify">
-            {loadedChapters[currentChapter.id] ? (
-              processContent(loadedChapters[currentChapter.id]).map((paragraph, idx) => (
+            {processedParagraphs.length > 0 ? (
+              processedParagraphs.map((paragraph, idx) => (
                 <p
                   key={idx}
                   ref={el => { paragraphRefs.current[idx] = el; }}

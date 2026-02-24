@@ -227,12 +227,12 @@ export function Home({ onOpenBook }: { onOpenBook: (id: string) => void }) {
             <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-xl shadow-xl border border-gray-100 dark:border-gray-700 py-2 z-20 animate-in slide-in-from-top-2">
               <label className="flex items-center gap-3 px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer transition-colors">
                 <Upload className="w-5 h-5 text-indigo-500" />
-                <span className="text-sm font-medium">Tải file (PDF/TXT)</span>
+                <span className="text-sm font-medium">Tải file (PDF/TXT/EPUB)</span>
                 <input
                   type="file"
                   ref={fileInputRef}
                   onChange={(e) => { handleFileChange(e); setShowAddMenu(false); }}
-                  accept=".txt,.pdf"
+                  accept=".txt,.pdf,.epub"
                   className="hidden"
                 />
               </label>
