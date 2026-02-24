@@ -1,8 +1,35 @@
+# Dependencies
 node_modules/
+
+# Build
 build/
 dist/
 coverage/
-.DS_Store
-*.log
+
+# Environment
 .env*
 !.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Test/Debug files
+debug_chars.js
+screen*.json
+*.pdf
+
+# Android build artifacts
+android/app/build/
+android/.gradle/
+android/local.properties
+
